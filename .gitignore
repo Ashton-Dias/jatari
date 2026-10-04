@@ -1,0 +1,17 @@
+# macOS / Xcode
+.DS_Store
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+.swiftpm/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Local scratch: backups of the Xcode project file made before hand edits
+*.bak
+
+# Simulator screenshots (large; they also show third-party artwork)
+screenshots/
+
+# Source artwork for the app icon (third-party; supply your own, see README)
+tools/icon-source/
