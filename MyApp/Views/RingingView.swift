@@ -38,7 +38,7 @@ struct RingingView: View {
                         .lineLimit(nil)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityLabel("Phrase to type: \(phrase)")
-                    PhraseField(text: $typed, onChange: check)
+                    PhraseField(text: $typed, isEnding: succeeded, onChange: check)
                         .frame(height: 44)
                         .padding(.horizontal, 12)
                         .background(.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
@@ -81,6 +81,8 @@ struct RingingView: View {
 /// so the phrase has to be typed by hand, character for character.
 private struct PhraseField: UIViewRepresentable {
     @Binding var text: String
+    /// True once the phrase has been typed: the field stops asking for focus and gives up the keyboard.
+    var isEnding = false
     let onChange: (String) -> Void
 
     final class NoPasteField: UITextField {
@@ -88,16 +90,21 @@ private struct PhraseField: UIViewRepresentable {
             if action == #selector(UIResponderStandardEditActions.paste(_:)) { return false }
             return super.canPerformAction(action, withSender: sender)
         }
+        /// Cleared when the alarm has been solved, so UIKit moving the field around during the dismissal can't bring the keyboard back.
+        var allowsFocus = true
+        override func becomeFirstResponder() -> Bool { allowsFocus ? super.becomeFirstResponder() : false }
+
         /// Take focus as soon as the field is actually on screen (the full-screen cover may still be animating in
         /// when the field is created), and again whenever the app returns to the foreground.
         override func didMoveToWindow() {
             super.didMoveToWindow()
             guard window != nil else { return }
-            DispatchQueue.main.async { [weak self] in _ = self?.becomeFirstResponder() }
+            DispatchQueue.main.async { [weak self] in if self?.window != nil { _ = self?.becomeFirstResponder() } }
             NotificationCenter.default.removeObserver(self, name: UIApplication.didBecomeActiveNotification, object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(refocus), name: UIApplication.didBecomeActiveNotification, object: nil)
         }
         @objc private func refocus() { if window != nil, !isFirstResponder { _ = becomeFirstResponder() } }
+        func stopRefocusing() { NotificationCenter.default.removeObserver(self) }
         deinit { NotificationCenter.default.removeObserver(self) }
     }
 
@@ -122,13 +129,34 @@ private struct PhraseField: UIViewRepresentable {
 
     func updateUIView(_ uiView: NoPasteField, context: Context) {
         if uiView.text != text { uiView.text = text }
-        if !uiView.isFirstResponder { DispatchQueue.main.async { uiView.becomeFirstResponder() } }
+        if isEnding {
+            context.coordinator.mayEndEditing = true
+            uiView.allowsFocus = false
+            uiView.stopRefocusing()
+            uiView.resignFirstResponder()
+            return
+        }
+        let coordinator = context.coordinator
+        if !coordinator.mayEndEditing, !uiView.isFirstResponder {
+            // Re-check when this runs: the screen may have started closing in the meantime (see `dismantleUIView`).
+            DispatchQueue.main.async { if !coordinator.mayEndEditing { uiView.becomeFirstResponder() } }
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
+    /// When the screen goes away (the phrase was typed), let the field give up focus so the keyboard doesn't linger over the list.
+    static func dismantleUIView(_ uiView: NoPasteField, coordinator: Coordinator) {
+        coordinator.mayEndEditing = true
+        uiView.allowsFocus = false
+        uiView.stopRefocusing()
+        uiView.resignFirstResponder()
+    }
+
     final class Coordinator: NSObject, UITextFieldDelegate {
         let parent: PhraseField
+        /// False while the alarm is ringing, so nothing can dismiss the keyboard; true once the screen is being torn down.
+        var mayEndEditing = false
         init(_ parent: PhraseField) { self.parent = parent }
         @objc func changed(_ f: UITextField) {
             parent.text = f.text ?? ""
@@ -136,6 +164,6 @@ private struct PhraseField: UIViewRepresentable {
         }
         // Keep the keyboard up: the return key does nothing.
         func textFieldShouldReturn(_ textField: UITextField) -> Bool { false }
-        func textFieldShouldEndEditing(_ textField: UITextField) -> Bool { false }
+        func textFieldShouldEndEditing(_ textField: UITextField) -> Bool { mayEndEditing }
     }
 }
