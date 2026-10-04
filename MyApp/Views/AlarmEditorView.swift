@@ -65,6 +65,7 @@ struct AlarmEditorView: View {
                     Toggle("Require phrase to stop", isOn: $requiresPhrase).tint(.orange)
                     if requiresPhrase {
                         TextField("Phrase to type", text: $phrase, axis: .vertical)
+                            .accessibilityIdentifier("phraseField")
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                         Toggle("Match capitalization & punctuation", isOn: $strict).tint(.orange)

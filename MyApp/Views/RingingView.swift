@@ -104,6 +104,7 @@ private struct PhraseField: UIViewRepresentable {
     func makeUIView(context: Context) -> NoPasteField {
         let f = NoPasteField()
         f.delegate = context.coordinator
+        f.accessibilityIdentifier = "ringPhraseField"
         f.placeholder = "Type here"
         f.textColor = .white
         f.font = .monospacedSystemFont(ofSize: 18, weight: .regular)
