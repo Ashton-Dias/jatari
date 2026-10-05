@@ -59,8 +59,10 @@ Launch flags for screenshots: `-previewList`, `-previewEditMode`, `-previewEdito
 3. Run on an iPhone to test real alarms. The simulator can't ring through silent mode or the lock screen.
 
 ## Artwork
-The background and app icon in this repository are **plain placeholder images** (an original sunset gradient), so the project builds
-for anyone. The author's own build uses third-party artwork that is deliberately not included. To use your own:
+The background and app icon are **third-party artwork, not original to this project**: the app icon is the cover art of the
+*Samurai Champloo Music Record* album, and the background is Samurai Champloo-themed fan art. They are included only so the app looks
+as it does in the screenshot, and they are **not covered by this project's license**. If you fork, redistribute or publish a build
+(for example to the App Store), replace both with artwork you have the rights to. To use your own:
 - **Background:** replace `MyApp/Assets.xcassets/AppBackground.imageset/background.jpg` with any portrait image (about 736×1117 works well).
   Text on top is white, so darker or mid-tone images read best.
 - **App icon:** replace `MyApp/Assets.xcassets/AppIcon.appiconset/icon-1024.png` with a **1024×1024 PNG with no transparency**, or put a source
