@@ -1,5 +1,7 @@
 # Jatari ("Gratitude")
 
+<p align="center"><img src="docs/home.png" alt="Jatari alarm list" width="300"></p>
+
 An iOS alarm clock with two kinds of alarm:
 
 | | Normal alarm | Phrase alarm |
