@@ -12,13 +12,14 @@ import AppIntents
 /// Two kinds of alarm:
 /// - **Normal alarms** (`requiresPhrase` off): system alert with Stop and a 3-minute Snooze (AlarmKit countdown).
 /// - **Phrase alarms**: no snooze at all. The only way to end one for good is `RingCoordinator.dismiss()`
-///   after the phrase has been typed.
+///   after the phrase has been typed. Because Stop on a locked phone can't open the app, a chain of backup
+///   alarms (one every `AlarmTiming.followUpSeconds`) is armed *before* the alarm fires, so Stop alone never ends it.
 @MainActor
 final class AlarmScheduler {
     static let shared = AlarmScheduler()
     private let manager = AlarmManager.shared
     private let defaults = UserDefaults.standard
-    private let rearmKey = "rearmAlarmIDs"
+    private let backupKey = "backupAlarmIDs"
 
     /// Notification action id for Snooze (normal alarms in the notification fallback).
     static let snoozeActionID = "SNOOZE"
@@ -40,10 +41,8 @@ final class AlarmScheduler {
             mode = state == .authorized ? .alarmKit : .notifications
         default: mode = .notifications
         }
-        if mode == .notifications {
-            _ = try? await UNUserNotificationCenter.current()
-                .requestAuthorization(options: [.alert, .sound, .badge])
-        }
+        // Needed in both modes: the fallback uses it for the alarm itself, AlarmKit mode for the "unlock" prompt.
+        _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
         return mode
     }
 
@@ -56,8 +55,9 @@ final class AlarmScheduler {
         case .alarmKit:
             clearNotifications(for: nil)
             for alarm in alarms { await scheduleAlarmKit(alarm, sounds: sounds) }
+            await armBackupChains(alarms: alarms, sounds: sounds)
             // Drop AlarmKit alarms that no longer correspond to a stored alarm.
-            let known = Set(alarms.map(\.id)).union(rearmIDs().values)
+            let known = Set(alarms.map(\.id)).union(backupIDs().values.flatMap { $0 })
             for existing in ((try? manager.alarms) ?? []) where !known.contains(existing.id) { try? manager.cancel(id: existing.id) }
         case .notifications:
             await syncNotifications(alarms: alarms, sounds: sounds)
@@ -66,7 +66,7 @@ final class AlarmScheduler {
 
     func cancel(_ alarm: AlarmItem) {
         try? manager.cancel(id: alarm.id)
-        cancelRearm(for: alarm.id)
+        cancelBackups(for: alarm.id)
         clearNotifications(for: alarm.id)
     }
 
@@ -113,29 +113,63 @@ final class AlarmScheduler {
         }
     }
 
-    /// Called when Stop is pressed: a backup alarm fires shortly after, so silencing the system alert
-    /// can never end the alarm. It is cancelled only when the phrase is typed.
-    func scheduleRearm(for alarm: AlarmItem, sounds: [CustomSound]) async {
-        guard alarm.isPhraseAlarm else { return }   // normal alarms never re-arm
-        var map = rearmIDs()
-        let rearmID = map[alarm.id] ?? UUID()
-        map[alarm.id] = rearmID
-        saveRearmIDs(map)
-        try? manager.cancel(id: rearmID)
-        let fire = Date().addingTimeInterval(AlarmTiming.followUpSeconds)
-        do {
-            _ = try await manager.schedule(id: rearmID, configuration: configuration(for: alarm, sounds: sounds, schedule: .fixed(fire)))
-        } catch {
-            print("AlarmKit re-arm failed: \(error)")
+    // MARK: Backup chain
+
+    /// Arms the backup chain for every enabled phrase alarm (from its next fire time) and removes stale chains.
+    /// A phrase alarm that is ringing right now keeps its chain untouched.
+    private func armBackupChains(alarms: [AlarmItem], sounds: [CustomSound]) async {
+        let phraseAlarms = alarms.filter { $0.isEnabled && $0.isPhraseAlarm }
+        let count = AlarmTiming.backupCount(forPhraseAlarms: phraseAlarms.count)
+        for alarm in alarms where !(alarm.isEnabled && alarm.isPhraseAlarm) { cancelBackups(for: alarm.id) }
+        for alarm in phraseAlarms {
+            if isRinging(alarm) { continue }
+            guard let fire = ScheduleLogic.nextFireDate(hour: alarm.hour, minute: alarm.minute,
+                                                        weekdays: Set(alarm.weekdays), after: .now) else { continue }
+            await armBackups(for: alarm, sounds: sounds, from: fire, count: count)
+            scheduleUnlockNotification(for: alarm, at: fire)
         }
     }
 
-    func cancelRearm(for alarmID: UUID) {
-        var map = rearmIDs()
-        guard let id = map.removeValue(forKey: alarmID) else { return }
-        try? manager.stop(id: id)
-        try? manager.cancel(id: id)
-        saveRearmIDs(map)
+    private func isRinging(_ alarm: AlarmItem) -> Bool {
+        if RingCoordinator.shared.ringingAlarmID == alarm.id { return true }
+        let ids = Set([alarm.id] + (backupIDs()[alarm.id] ?? []))
+        return ((try? manager.alarms) ?? []).contains { ids.contains($0.id) && $0.state != .scheduled }
+    }
+
+    /// Replaces the alarm's backups with `count` fixed alarms, one every `followUpSeconds` after `base`.
+    private func armBackups(for alarm: AlarmItem, sounds: [CustomSound], from base: Date, count: Int,
+                            keeping extra: [UUID] = []) async {
+        cancelBackups(for: alarm.id)
+        var ids = extra
+        for fire in ScheduleLogic.backupDates(from: base, count: count, interval: AlarmTiming.followUpSeconds) {
+            let id = UUID()
+            do {
+                _ = try await manager.schedule(id: id, configuration: configuration(for: alarm, sounds: sounds, schedule: .fixed(fire)))
+                ids.append(id)
+                setBackupIDs(ids, for: alarm.id)
+            } catch {
+                print("AlarmKit backup failed: \(error)")
+            }
+        }
+        setBackupIDs(ids, for: alarm.id)
+    }
+
+    /// Called when Stop is pressed: pushes the chain out from now, so another alarm always rings within
+    /// `followUpSeconds`. It does not depend on the app being on screen, so a locked phone still gets it.
+    func scheduleRearm(for alarm: AlarmItem, sounds: [CustomSound]) async {
+        guard alarm.isPhraseAlarm else { return }   // normal alarms never re-arm
+        let count = AlarmTiming.backupCount(forPhraseAlarms: 1)
+        await armBackups(for: alarm, sounds: sounds, from: .now, count: count)
+        postUnlockNotification(for: alarm, after: 2)
+    }
+
+    /// Cancels every backup (and a pending/alerting test alarm) for a stored alarm. Used when the phrase is solved,
+    /// the alarm is deleted or disabled, or the chain is rebuilt.
+    func cancelBackups(for alarmID: UUID) {
+        var map = backupIDs()
+        guard let ids = map.removeValue(forKey: alarmID) else { return }
+        for id in ids { try? manager.stop(id: id); try? manager.cancel(id: id) }
+        saveBackupIDs(map)
     }
 
     /// A system alarm that no longer has a stored alarm behind it (deleted while ringing / a backup was pending):
@@ -143,18 +177,45 @@ final class AlarmScheduler {
     func endOrphan(systemAlarmID: UUID) {
         try? manager.stop(id: systemAlarmID)
         try? manager.cancel(id: systemAlarmID)
-        if let stored = storedAlarmID(forSystemAlarm: systemAlarmID) { cancelRearm(for: stored) }
+        if let stored = storedAlarmID(forSystemAlarm: systemAlarmID), stored != systemAlarmID { cancelBackups(for: stored) }
     }
 
     func stopSystemAlert(for alarmID: UUID) {
         try? manager.stop(id: alarmID)
-        if let r = rearmIDs()[alarmID] { try? manager.stop(id: r) }
+        for id in backupIDs()[alarmID] ?? [] { try? manager.stop(id: id) }
     }
 
-    /// Maps an AlarmKit alarm id (main or re-arm) back to the stored alarm id.
+    /// Maps an AlarmKit alarm id (main or backup) back to the stored alarm id.
     func storedAlarmID(forSystemAlarm id: UUID) -> UUID? {
-        if let hit = rearmIDs().first(where: { $0.value == id }) { return hit.key }
+        if let hit = backupIDs().first(where: { $0.value.contains(id) }) { return hit.key }
         return id
+    }
+
+    // MARK: Unlock prompt
+
+    /// A visible, silent, time-sensitive prompt for the lock screen: the alarm can't open the app by itself there.
+    private func unlockContent(for alarm: AlarmItem) -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = alarm.label.isEmpty ? "Alarm" : alarm.label
+        content.body = "Unlock and type your phrase to turn this alarm off."
+        content.interruptionLevel = .timeSensitive
+        content.userInfo = ["alarmID": alarm.id.uuidString, "unlock": true]
+        return content
+    }
+
+    private func scheduleUnlockNotification(for alarm: AlarmItem, at fire: Date) {
+        let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: fire)
+        let request = UNNotificationRequest(identifier: "alarm.\(alarm.id.uuidString).unlock.\(Int(fire.timeIntervalSince1970))",
+                                            content: unlockContent(for: alarm),
+                                            trigger: UNCalendarNotificationTrigger(dateMatching: comps, repeats: false))
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    private func postUnlockNotification(for alarm: AlarmItem, after seconds: TimeInterval) {
+        let request = UNNotificationRequest(identifier: "alarm.\(alarm.id.uuidString).unlock.stop.\(Int(Date().timeIntervalSince1970))",
+                                            content: unlockContent(for: alarm),
+                                            trigger: UNTimeIntervalNotificationTrigger(timeInterval: seconds, repeats: false))
+        UNUserNotificationCenter.current().add(request)
     }
 
     /// Schedules a one-off alarm a few seconds from now, for trying the real ringing flow.
@@ -162,20 +223,28 @@ final class AlarmScheduler {
         await requestAuthorization()
         if mode == .alarmKit {
             let id = UUID()
-            if alarm.isPhraseAlarm { var map = rearmIDs(); map[alarm.id] = id; saveRearmIDs(map) }
-            _ = try? await manager.schedule(id: id, configuration: configuration(for: alarm, sounds: sounds, schedule: .fixed(.now.addingTimeInterval(seconds))))
+            let fire = Date.now.addingTimeInterval(seconds)
+            _ = try? await manager.schedule(id: id, configuration: configuration(for: alarm, sounds: sounds, schedule: .fixed(fire)))
+            if alarm.isPhraseAlarm {
+                // The test alarm is tracked with its backups, so solving the phrase cancels all of them.
+                await armBackups(for: alarm, sounds: sounds, from: fire,
+                                 count: AlarmTiming.backupCount(forPhraseAlarms: 1), keeping: [id])
+            }
         } else {
             await postNotificationChain(for: alarm, soundFile: SoundLibrary.fileName(for: alarm.soundID, customSounds: sounds),
                                         start: .now.addingTimeInterval(seconds), tag: "test", length: alarm.isPhraseAlarm ? 10 : 1)
         }
     }
 
-    private func rearmIDs() -> [UUID: UUID] {
-        let raw = defaults.dictionary(forKey: rearmKey) as? [String: String] ?? [:]
-        return raw.reduce(into: [:]) { if let k = UUID(uuidString: $1.key), let v = UUID(uuidString: $1.value) { $0[k] = v } }
+    private func backupIDs() -> [UUID: [UUID]] {
+        let raw = defaults.dictionary(forKey: backupKey) as? [String: [String]] ?? [:]
+        return raw.reduce(into: [:]) { if let k = UUID(uuidString: $1.key) { $0[k] = $1.value.compactMap(UUID.init(uuidString:)) } }
     }
-    private func saveRearmIDs(_ map: [UUID: UUID]) {
-        defaults.set(map.reduce(into: [String: String]()) { $0[$1.key.uuidString] = $1.value.uuidString }, forKey: rearmKey)
+    private func saveBackupIDs(_ map: [UUID: [UUID]]) {
+        defaults.set(map.reduce(into: [String: [String]]()) { $0[$1.key.uuidString] = $1.value.map(\.uuidString) }, forKey: backupKey)
+    }
+    private func setBackupIDs(_ ids: [UUID], for alarmID: UUID) {
+        var map = backupIDs(); map[alarmID] = ids; saveBackupIDs(map)
     }
 
     static func localeWeekday(_ n: Int) -> Locale.Weekday? {

@@ -23,6 +23,7 @@ struct RootView: View {
                 // Screenshot/preview launches skip the system permission prompts.
                 guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("-preview") }) else { return }
                 await AlarmScheduler.shared.sync(alarms: alarms, sounds: sounds)
+                coordinator.checkSystemAlerts()
             }
             .task {
                 // Reflect system alarms that start alerting while the app is open.
@@ -33,7 +34,11 @@ struct RootView: View {
                 }
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active { coordinator.restoreIfNeeded() }
+                guard phase == .active else { return }
+                coordinator.restoreIfNeeded()
+                guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("-preview") }) else { return }
+                coordinator.checkSystemAlerts()
+                Task { await AlarmScheduler.shared.sync(alarms: alarms, sounds: sounds) }   // keeps the backup chains fresh
             }
     }
 }

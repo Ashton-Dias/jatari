@@ -20,8 +20,12 @@ There is no default phrase: an alarm only has a phrase challenge if you turn it 
 2. **Normal alarms** use AlarmKit's countdown behavior for Snooze (`AlarmTiming.snoozeSeconds` = 180 s). The system handles
    Stop and Snooze; the app isn't involved. The **PhraseAlarmWidgets** extension draws the snooze countdown Live Activity.
 3. **Phrase alarms** have no secondary button. Stop runs `StopAlarmIntent` (`openAppWhenRun`), which opens the app to the
-   phrase screen, **keeps ringing from inside the app**, and arms a backup AlarmKit alarm 60 s out. Stopping again re-arms it.
-   Only the correct phrase cancels everything.
+   phrase screen and **keeps ringing from inside the app**. Stop alone can never end a phrase alarm, because a chain of
+   backup AlarmKit alarms (one every 60 s, up to 10) is armed *before* the alarm fires and is pushed out again on every Stop.
+   This works on a locked phone, where Stop can't open the app: the next backup simply rings. A silent time-sensitive
+   notification ("Unlock and type your phrase") is also posted. On unlock the app goes straight to the phrase screen.
+   Only the correct phrase cancels the chain (it is also cancelled if the alarm is deleted or turned off). The chain covers the
+   next occurrence of each alarm and is refreshed whenever the app launches, comes to the foreground or an alarm is solved.
 4. If AlarmKit access is denied, the app falls back to local notifications: normal alarms get one notification with a
    Snooze action (3 min); phrase alarms get a chain of notifications every 60 s until the phrase is typed.
 5. If a ringing alarm's record no longer exists (for example it was deleted), the app ends it cleanly rather than leaving you
@@ -29,7 +33,7 @@ There is no default phrase: an alarm only has a phrase challenge if you turn it 
 
 ## Limits (iOS)
 - Nothing can stop you **force-quitting the app, switching the phone off, or muting/lowering volume** where the system
-  allows it. If you swipe the app away mid-way through a phrase alarm, the backup alarm / notification chain still fires
+  allows it. Sliding Stop on the lock screen can't be blocked; the alarm comes back within about 60 s instead. If you swipe the app away mid-way through a phrase alarm, the backup alarm / notification chain still fires
   and reopens the flow, but it can't be made unkillable.
 - Alarm and notification sounds are limited to 30 s.
 - The notification fallback is only as loud as the user's notification settings.

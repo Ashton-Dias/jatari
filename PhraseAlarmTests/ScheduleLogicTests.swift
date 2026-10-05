@@ -270,3 +270,22 @@ struct AlarmDeletionTests {
         #expect(UserDefaults.standard.string(forKey: "ringingAlarmID") == nil)
     }
 }
+
+struct BackupChainTests {
+    @Test func datesStartOneIntervalAfterBase() {
+        let base = date(2026, 10, 7, 7, 0)
+        let dates = ScheduleLogic.backupDates(from: base, count: 3, interval: 60)
+        #expect(dates == [date(2026, 10, 7, 7, 1), date(2026, 10, 7, 7, 2), date(2026, 10, 7, 7, 3)])
+    }
+
+    @Test func zeroCountIsEmpty() {
+        #expect(ScheduleLogic.backupDates(from: .now, count: 0, interval: 60).isEmpty)
+    }
+
+    @Test func countSharesTheBudgetAndStaysUseful() {
+        #expect(AlarmTiming.backupCount(forPhraseAlarms: 0) == 10)
+        #expect(AlarmTiming.backupCount(forPhraseAlarms: 1) == 10)
+        #expect(AlarmTiming.backupCount(forPhraseAlarms: 8) == 6)
+        #expect(AlarmTiming.backupCount(forPhraseAlarms: 100) == 2)
+    }
+}

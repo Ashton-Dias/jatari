@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import AVFoundation
+import AlarmKit
 import Observation
 
 /// Owns the "a phrase alarm is ringing" state: which alarm, who is making noise, and how it ends.
@@ -40,6 +41,14 @@ final class RingCoordinator {
         }
     }
 
+    /// Picks up a phrase alarm that is alerting right now but whose Stop intent never ran (for example Stop was
+    /// slid on a locked phone), so unlocking lands on the phrase screen.
+    func checkSystemAlerts() {
+        for alarm in (try? AlarmManager.shared.alarms) ?? [] where alarm.state == .alerting {
+            alarmAlerting(systemAlarmID: alarm.id)
+        }
+    }
+
     /// AlarmKit (or a notification) reports an alarm is alerting.
     /// - Phrase alarm: show the phrase screen (the system is making the noise unless `appPlaysSound`).
     /// - Normal alarm: nothing to do except tidy up a one-time alarm, since the system alert handles Stop/Snooze.
@@ -70,9 +79,10 @@ final class RingCoordinator {
             AlarmScheduler.shared.endOrphan(systemAlarmID: id)
             return
         }
+        // Arm the backup first: while locked the app may never get to show UI or start audio.
         begin(id)
-        startAppAudio()
         await AlarmScheduler.shared.scheduleRearm(for: alarm, sounds: sounds())
+        startAppAudio()
     }
 
     /// The phrase was typed correctly (or there is nothing left to solve): end everything for good.
@@ -81,15 +91,15 @@ final class RingCoordinator {
         stopAppAudio()
         let scheduler = AlarmScheduler.shared
         scheduler.stopSystemAlert(for: id)
-        scheduler.cancelRearm(for: id)
+        scheduler.cancelBackups(for: id)
         scheduler.clearNotifications(for: id)
         if let alarm = ringingAlarm {
             if alarm.weekdays.isEmpty { alarm.isEnabled = false; scheduler.cancel(alarm) }
             try? container?.mainContext.save()
         }
         clear()
-        // Re-create future notification chains (no-op in AlarmKit mode).
-        if let context = container?.mainContext, scheduler.mode == .notifications {
+        // Re-arm the next occurrence's backup chain / notification chains.
+        if let context = container?.mainContext {
             Task { await scheduler.sync(alarms: (try? context.fetch(FetchDescriptor<AlarmItem>())) ?? [], sounds: sounds()) }
         }
     }

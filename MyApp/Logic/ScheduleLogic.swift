@@ -19,6 +19,12 @@ nonisolated enum ScheduleLogic {
         }.min()
     }
 
+    /// Fire times of a phrase alarm's backup chain: `count` dates, one every `interval` seconds after `base`.
+    static func backupDates(from base: Date, count: Int, interval: TimeInterval) -> [Date] {
+        guard count > 0 else { return [] }
+        return (1...count).map { base.addingTimeInterval(Double($0) * interval) }
+    }
+
     static func repeatSummary(_ weekdays: Set<Int>, calendar: Calendar = .current) -> String {
         if weekdays.isEmpty { return "Once" }
         if weekdays.count == 7 { return "Every day" }
