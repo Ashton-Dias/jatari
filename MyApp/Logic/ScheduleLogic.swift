@@ -43,9 +43,21 @@ nonisolated enum PhraseMatcher {
         phrase.trimmingCharacters(in: .whitespacesAndNewlines).count >= minimumLength
     }
 
-    /// Trims, collapses runs of whitespace, and (unless strict) ignores case.
+    /// Maps typographic quotes and dashes (what Smart Punctuation produces) to their plain keyboard equivalents.
+    static func foldPunctuation(_ ch: Character) -> Character {
+        switch ch {
+        case "\u{2018}", "\u{2019}", "\u{201A}", "\u{201B}", "\u{2032}": return "'"
+        case "\u{201C}", "\u{201D}", "\u{201E}", "\u{201F}", "\u{2033}": return "\""
+        case "\u{2010}", "\u{2011}", "\u{2012}", "\u{2013}", "\u{2014}", "\u{2015}", "\u{2212}": return "-"
+        default: return ch
+        }
+    }
+
+    static func foldPunctuation(_ s: String) -> String { String(s.map(foldPunctuation)) }
+
+    /// Trims, collapses runs of whitespace, folds typographic punctuation, and (unless strict) ignores case.
     static func normalize(_ s: String, strict: Bool) -> String {
-        let collapsed = s.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let collapsed = foldPunctuation(s.split(whereSeparator: \.isWhitespace).joined(separator: " "))
         return strict ? collapsed : collapsed.lowercased()
     }
 
@@ -58,10 +70,12 @@ nonisolated enum PhraseMatcher {
 
     /// Per-character feedback for the phrase being typed, aligned to the phrase's characters.
     static func feedback(typed: String, phrase: String, strict: Bool) -> [(Character, CharState)] {
-        let typedChars = Array(strict ? typed : typed.lowercased())
+        let folded = foldPunctuation(typed)
+        let typedChars = Array(strict ? folded : folded.lowercased())
         return phrase.enumerated().map { i, ch in
             guard i < typedChars.count else { return (ch, .pending) }
-            let expected = strict ? ch : Character(String(ch).lowercased())
+            let plain = foldPunctuation(ch)
+            let expected = strict ? plain : Character(String(plain).lowercased())
             return (ch, typedChars[i] == expected ? .correct : .wrong)
         }
     }

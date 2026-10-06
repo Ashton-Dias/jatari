@@ -68,6 +68,11 @@ struct AlarmEditorView: View {
                             .accessibilityIdentifier("phraseField")
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
+                            .onChange(of: phrase) { _, new in
+                                // Smart Punctuation would store curly quotes and long dashes that the ringing keyboard can't type.
+                                let plain = PhraseMatcher.foldPunctuation(new)
+                                if plain != new { phrase = plain }
+                            }
                         Toggle("Match capitalization & punctuation", isOn: $strict).tint(.orange)
                         if !phraseOK {
                             Text("Use at least \(PhraseMatcher.minimumLength) characters.").font(.app(.footnote)).foregroundStyle(Color(red: 1, green: 0.55, blue: 0.5))

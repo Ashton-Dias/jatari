@@ -64,6 +64,22 @@ struct NextFireDateTests {
 struct PhraseMatcherTests {
     let phrase = "I am awake and getting out of bed"
 
+    @Test func typographicPunctuationMatchesPlain() {
+        #expect(PhraseMatcher.matches(typed: "I'm awake now", phrase: "I\u{2019}m awake now", strict: true))
+        #expect(PhraseMatcher.matches(typed: "I\u{2019}m awake now", phrase: "I'm awake now", strict: true))
+        #expect(PhraseMatcher.matches(typed: "say \"hi\" - ok", phrase: "say \u{201C}hi\u{201D} \u{2014} ok", strict: true))
+        #expect(!PhraseMatcher.matches(typed: "Im awake now", phrase: "I\u{2019}m awake now", strict: true))
+    }
+
+    @Test func feedbackTreatsCurlyApostropheAsCorrect() {
+        let fb = PhraseMatcher.feedback(typed: "I'm", phrase: "I\u{2019}m up", strict: true)
+        #expect(fb.prefix(3).allSatisfy { $0.1 == .correct })
+    }
+
+    @Test func accentedLettersMatchAcrossUnicodeForms() {
+        #expect(PhraseMatcher.matches(typed: "cafe\u{301} time", phrase: "caf\u{E9} time", strict: true))
+    }
+
     @Test func exactMatchAndCaseInsensitive() {
         #expect(PhraseMatcher.matches(typed: phrase, phrase: phrase, strict: false))
         #expect(PhraseMatcher.matches(typed: phrase.uppercased(), phrase: phrase, strict: false))
